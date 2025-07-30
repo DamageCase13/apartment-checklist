@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive Apartment Renovation Checklist</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Chosen Palette: Warm Neutrals (Slate, Stone, Amber) -->
+    <!-- Application Structure Plan: A multi-building, multi-unit task-oriented dashboard design was chosen. It features a main header, a hierarchical selection area (Building then Unit), a dynamic summary/dashboard section, category-based filters, and an interactive list of checklist items. A chart provides a visual summary of the currently selected unit's progress. This structure is designed for property managers or owners to efficiently switch between and manage hundreds of units across multiple buildings. Firestore integration ensures data persistence and real-time updates across multiple sessions and users. The task-focused flow directly supports the user's goal of organizing and completing renovation work for an entire portfolio of properties. -->
+    <!-- Visualization & Content Choices: 
+        - Building Selection -> Goal: Organize/Navigate -> Presentation: Dropdown and Add Building Button -> Interaction: Selects building, loads its units; button adds new building. -> Justification: Essential for managing distinct groups of units (buildings). -> Method: HTML/CSS/JS with Firestore.
+        - Unit Selection (per building) -> Goal: Organize/Navigate -> Presentation: Dropdown and Add Unit Button -> Interaction: Selects unit, loads its data; button adds new unit to selected building. -> Justification: Essential for managing individual unit data within a building. -> Method: HTML/CSS/JS with Firestore.
+        - Checklist Data (per unit) -> Goal: Organize/Interact -> Presentation: Interactive Cards -> Interaction: Users can change status, priority, and add costs/notes via dropdowns and inputs, triggering Firestore updates. -> Justification: Transforms a passive list into an active management tool for each unit. -> Method: HTML/CSS/JS with Firestore.
+        - Summary Stats (per unit) -> Goal: Inform -> Presentation: Dynamic Stat Cards -> Interaction: Numbers update automatically as item statuses change for the current unit. -> Justification: Provides an at-a-glance overview of the current unit's project progress and cost. -> Method: HTML/JS with Firestore data.
+        - Task Status Breakdown (per unit) -> Goal: Compare/Inform -> Presentation: Donut Chart -> Interaction: Chart updates in real-time when an item's status is changed for the current unit. -> Justification: Offers a quick, visual representation of current unit's completion. -> Library: Chart.js (Canvas).
+        - Gemini API Integration -> Goal: Enhance Planning/Brainstorming -> Presentation: AI-generated text suggestions -> Interaction: Buttons trigger LLM calls for renovation ideas and expanded notes, applicable to the current item. -> Justification: Provides creative and practical assistance for renovation tasks within any selected unit. -> Method: HTML/JS with Gemini API calls.
+        - Custom Modal System -> Goal: User Feedback/Input -> Presentation: Overlay Dialog -> Interaction: Replaces native browser alerts/prompts for consistent UI and better control over user input. -> Justification: Improves user experience and reliability in various environments. -> Method: HTML/CSS/JS.
+    -->
+    <!-- CONFIRMATION: NO SVG graphics used. NO Mermaid JS used. -->
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f8fafc; /* slate-50 */
+        }
+        .chart-container {
+            position: relative;
+            width: 100%;
+            max-width: 400px;
+            margin-left: auto;
+            margin-right: auto;
+            height: 300px;
+            max-height: 400px;
+        }
+        @media (min-width: 768px) {
+            .chart-container {
+                height: 350px;
+            }
+        }
+        .item-card.done {
+            opacity: 0.6;
+        }
+        .item-card.done .item-description {
+            text-decoration: line-through;
+        }
+        .gemini-response {
+            background-color: #e0f2fe; /* light blue for AI response */
+            border-left: 4px solid #3b82f6; /* blue-500 */
+            padding: 1rem;
+            margin-top: 1rem;
+            border-radius: 0.5rem;
+            font-size: 0.875rem;
+            color: #1e40af; /* blue-800 */
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        .loading-spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #3b82f6;
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            animation: spin 1s linear infinite;
+            display: inline-block;
+            vertical-align: middle;
+            margin-left: 8px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        /* Custom Modal Styles */
+        #custom-modal {
+            background-color: rgba(0, 0, 0, 0.5);
+            transition: opacity 0.3s ease-in-out;
+        }
+        #custom-modal > div {
+            transform: translateY(-20px);
+            transition: transform 0.3s ease-in-out, opacity 0.3s ease-in-out;
+        }
+        #custom-modal.hidden > div {
+            transform: translateY(-50px);
+            opacity: 0;
+        }
+        #custom-modal.hidden {
+            opacity: 0;
+        }
+    </style>
+</head>
+<body class="text-slate-800">
+
+    <div class="container mx-auto p-4 md:p-8">
+
+        <header class="text-center mb-8">
+            <h1 class="text-4xl font-bold text-slate-900">Apartment Renovation Checklist</h1>
+            <p class="mt-2 text-lg text-slate-600">Manage renovations across all your buildings and units.</p>
+        </header>
+
+        <main>
+            <section id="building-selection-section" class="mb-8 p-6 bg-white rounded-xl shadow-sm border border-slate-200">
+                <h2 class="text-2xl font-bold mb-4 text-slate-800">Select Building</h2>
+                <p class="text-slate-600 mb-6">Choose a building from the dropdown or add a new one to get started. Default buildings will be added if none exist.</p>
+                <div id="building-selector-container" class="flex flex-wrap items-center gap-4 hidden">
+                    <select id="building-select" class="p-2 border rounded-md bg-white text-base flex-grow max-w-xs"></select>
+                    <button id="add-building-btn" class="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 transition">Add New Building</button>
+                    <p class="text-slate-600 ml-auto">Current: <span id="current-selection-display" class="font-semibold text-slate-900"></span></p>
+                </div>
+                <div id="add-building-section" class="hidden text-center py-4">
+                    <p class="text-slate-500">No buildings found. Adding default buildings...</p>
+                    <!-- This section will be hidden once default buildings are added -->
+                </div>
+            </section>
+
+            <section id="unit-selection-section" class="mb-8 p-6 bg-white rounded-xl shadow-sm border border-slate-200 hidden">
+                <h2 class="text-2xl font-bold mb-4 text-slate-800">Select Unit</h2>
+                <p class="text-slate-600 mb-6">Choose an existing unit from the dropdown or add a new one for the selected building.</p>
+                <div id="unit-selector-container" class="flex flex-wrap items-center gap-4 hidden">
+                    <select id="unit-select" class="p-2 border rounded-md bg-white text-base flex-grow max-w-xs"></select>
+                    <button id="add-unit-btn" class="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 transition">Add New Unit</button>
+                </div>
+                <div id="add-unit-section" class="hidden text-center py-4">
+                    <p class="text-slate-500">No units found for this building. Click "Add New Unit" to create your first unit!</p>
+                    <button id="add-unit-btn-placeholder" class="mt-4 px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition text-lg">Add Your First Unit</button>
+                </div>
+            </section>
+
+            <section id="checklist-section" class="hidden">
+                <section id="dashboard" class="mb-8 p-6 bg-white rounded-xl shadow-sm border border-slate-200">
+                    <h2 class="text-2xl font-bold mb-4 text-slate-800">Project Dashboard</h2>
+                    <p class="text-slate-600 mb-6">This dashboard provides a real-time summary of the currently selected unit's renovation project. As you update the status and costs of items in the checklist below, the figures and chart here will automatically adjust to reflect your progress.</p>
+                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                        <div class="p-4 bg-slate-50 rounded-lg">
+                            <h3 class="text-sm font-medium text-slate-500">Total Items</h3>
+                            <p id="total-items" class="text-3xl font-semibold text-slate-900">0</p>
+                        </div>
+                        <div class="p-4 bg-amber-50 rounded-lg">
+                            <h3 class="text-sm font-medium text-amber-600">Pending Items</h3>
+                            <p id="pending-items" class="text-3xl font-semibold text-amber-800">0</p>
+                        </div>
+                        <div class="p-4 bg-green-50 rounded-lg">
+                            <h3 class="text-sm font-medium text-green-600">Completed Items</h3>
+                            <p id="completed-items" class="text-3xl font-semibold text-green-800">0</p>
+                        </div>
+                        <div class="p-4 bg-stone-50 rounded-lg">
+                            <h3 class="text-sm font-medium text-stone-600">Total Est. Cost</h3>
+                            <p id="total-cost" class="text-3xl font-semibold text-stone-800">$0</p>
+                        </div>
+                        <div class="md:col-span-2 lg:col-span-4 p-4 bg-white rounded-lg">
+                            <div class="chart-container">
+                                <canvas id="statusChart"></canvas>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <section id="checklist" class="p-6 bg-white rounded-xl shadow-sm border border-slate-200">
+                    <h2 class="text-2xl font-bold mb-4 text-slate-800">Checklist Items</h2>
+                    <p class="text-slate-600 mb-6">Use the filters to focus on specific areas of the apartment. You can update the Status, Priority, Cost, and Notes for each item directly. Your changes will be instantly reflected in the dashboard above. Also, try the new ✨ buttons for AI-powered suggestions!</p>
+                    <div id="filters" class="flex flex-wrap gap-2 mb-6">
+                        <button id="add-custom-item-btn" class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition">Add Custom Item</button>
+                    </div>
+                    <div id="checklist-items" class="space-y-4">
+                    </div>
+                </section>
+            </section>
+        </main>
+
+    </div>
+
+    <!-- Custom Modal HTML -->
+    <div id="custom-modal" class="fixed inset-0 bg-gray-600 bg-opacity-75 flex items-center justify-center z-50 hidden">
+        <div class="bg-white p-6 rounded-lg shadow-xl max-w-sm w-full">
+            <p id="modal-message" class="text-lg font-semibold mb-4 text-center"></p>
+            <input type="text" id="modal-input-1" class="w-full p-2 border rounded-md mb-2 hidden" placeholder="Input 1">
+            <input type="text" id="modal-input-2" class="w-full p-2 border rounded-md mb-2 hidden" placeholder="Input 2">
+            <input type="text" id="modal-input-3" class="w-full p-2 border rounded-md mb-4 hidden" placeholder="Input 3">
+            <div class="flex justify-end gap-2">
+                <button id="modal-cancel-btn" class="px-4 py-2 bg-gray-300 text-gray-800 rounded-md hover:bg-gray-400 transition hidden">Cancel</button>
+                <button id="modal-ok-btn" class="px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600 transition">OK</button>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot, collection, getDocs, query } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global variables for Firebase instances and data
+        window.app;
+        window.db;
+        window.auth;
+        window.userId = null;
+        window.selectedBuildingId = null;
+        window.selectedUnitId = null;
+        window.currentUnitChecklistData = [];
+        window.buildings = []; // Stores { id: 'buildingId', name: 'Building Name' }
+        window.units = []; // Stores { id: 'unitId', name: 'Unit Name' } for the selected building
+
+        // Initial checklist template for new units
+        window.initialChecklistTemplate = [
+            { id: 1, area: 'Overall', item: 'Walls', issue: 'Cracks, holes, scuffs, outdated paint color', priority: 'Medium', cost: 0, notes: 'Patch, repaint', status: 'To Do' },
+            { id: 2, area: 'Overall', item: 'Ceilings', issue: 'Water stains, cracks, peeling paint', priority: 'High', cost: 0, notes: 'Repair leaks, patch, repaint', status: 'To Do' },
+            { id: 3, area: 'Overall', item: 'Flooring', issue: 'Scratches, wear, loose tiles, outdated carpet', priority: 'Medium', cost: 0, notes: 'Refinish or replace', status: 'To Do' },
+            { id: 4, area: 'Overall', item: 'Lighting Fixtures', issue: 'Flickering, broken, outdated style', priority: 'Low', cost: 0, notes: 'Replace bulbs or upgrade fixtures', status: 'To Do' },
+            { id: 5, area: 'Overall', item: 'Windows', issue: 'Drafts, broken seals, sticky, dirty', priority: 'Medium', cost: 0, notes: 'Re-caulk, repair, clean', status: 'To Do' },
+            { id: 6, area: 'Overall', item: 'Doors', issue: 'Scratches, dents, sticky, broken hardware', priority: 'Low', cost: 0, notes: 'Repaint or replace hardware', status: 'To Do' },
+            { id: 7, area: 'Overall', item: 'Outlets/Switches', issue: 'Loose, non-functional, outdated', priority: 'High', cost: 0, notes: 'Replace, ensure GFCI in wet areas', status: 'To Do' },
+            { id: 8, area: 'Overall', item: 'Smoke/CO Detectors', issue: 'Missing, expired, non-functional', priority: 'High', cost: 0, notes: 'Install/replace, test', status: 'To Do' },
+            { id: 9, area: 'Overall', item: 'HVAC/Vents', issue: 'Dirty, noisy, poor airflow', priority: 'Medium', cost: 0, notes: 'Clean, repair, replace filters', status: 'To Do' },
+            { id: 10, area: 'Kitchen', item: 'Cabinets', issue: 'Scratches, loose hinges, outdated style', priority: 'Medium', cost: 0, notes: 'Repaint or replace hardware', status: 'To Do' },
+            { id: 11, area: 'Kitchen', item: 'Countertops', issue: 'Stains, scratches, chips, outdated material', priority: 'High', cost: 0, notes: 'Resurface or replace', status: 'To Do' },
+            { id: 12, area: 'Kitchen', item: 'Sink/Faucet', issue: 'Leaks, low pressure, rust, outdated', priority: 'High', cost: 0, notes: 'Repair leak, replace faucet', status: 'To Do' },
+            { id: 13, area: 'Kitchen', item: 'Appliances', issue: 'Non-functional, outdated, dirty', priority: 'High', cost: 0, notes: 'Repair or replace', status: 'To Do' },
+            { id: 14, area: 'Kitchen', item: 'Backsplash', issue: 'Missing, damaged, outdated', priority: 'Low', cost: 0, notes: 'Install new backsplash', status: 'To Do' },
+            { id: 15, area: 'Bathroom', item: 'Toilet', issue: 'Leaking, wobbly, outdated', priority: 'High', cost: 0, notes: 'Repair or replace', status: 'To Do' },
+            { id: 16, area: 'Bathroom', item: 'Sink/Vanity', issue: 'Leaks, cracks, outdated, poor storage', priority: 'Medium', cost: 0, notes: 'Repair or replace', status: 'To Do' },
+            { id: 17, area: 'Bathroom', item: 'Shower/Tub', issue: 'Leaks, mold, cracks, outdated', priority: 'High', cost: 0, notes: 'Re-grout, re-caulk, resurface', status: 'To Do' },
+            { id: 18, area: 'Bathroom', item: 'Tiles', issue: 'Cracked, missing, dirty grout', priority: 'Medium', cost: 0, notes: 'Replace or re-grout', status: 'To Do' },
+            { id: 19, area: 'Bathroom', item: 'Exhaust Fan', issue: 'Noisy, non-functional', priority: 'Medium', cost: 0, notes: 'Clean or replace', status: 'To Do' },
+            { id: 20, area: 'Bedrooms', item: 'Closets', issue: 'Damaged rods/shelves, poor lighting', priority: 'Low', cost: 0, notes: 'Repair and add organizers', status: 'To Do' },
+            { id: 21, area: 'Other', item: 'Balcony/Patio', issue: 'Cracks, railing issues, dirty', priority: 'Medium', cost: 0, notes: 'Repair and power wash', status: 'To Do' },
+        ];
+
+        // Default buildings to add if none exist
+        window.defaultBuildings = ['Building 300', 'Building 400', 'Building 340', 'Building 345'];
+
+        // DOM element references (will be assigned on DOMContentLoaded)
+        let buildingSelect;
+        let addBuildingBtn;
+        let buildingSelectorContainer;
+        let addBuildingSection;
+        let currentSelectionDisplay;
+
+        let unitSelect;
+        let addUnitBtn;
+        let unitSelectorContainer;
+        let addUnitSection;
+        let addUnitBtnPlaceholder;
+
+        let checklistSection;
+        let totalItemsDisplay;
+        let completedItemsDisplay;
+        let pendingItemsDisplay;
+        let totalCostDisplay;
+        let statusChartCanvas;
+
+        let filtersContainer;
+        let checklistContainer;
+        let addCustomItemBtn;
+
+        let modalMessage;
+        let modalInput1;
+        let modalInput2;
+        let modalInput3;
+        let modalCancelBtn;
+        let modalOkBtn;
+        let customModal;
+
+        // Function to load buildings from Firestore
+        async function loadBuildings() {
+            if (!window.db || !window.userId) return;
+
+            const buildingsCollectionRef = collection(window.db, `artifacts/${window.appId}/users/${window.userId}/buildings`);
+            try {
+                const querySnapshot = await getDocs(query(buildingsCollectionRef));
+                window.buildings = [];
+                querySnapshot.forEach((doc) => {
+                    window.buildings.push({ id: doc.id, name: doc.data().name || doc.id });
+                });
+                window.buildings.sort((a, b) => a.name.localeCompare(b.name)); // Sort buildings alphabetically
+
+                window.renderBuildingSelector(); // Call global function
+                if (window.buildings.length > 0) {
+                    await window.selectBuilding(window.buildings[0].id); // Call global function
+                } else {
+                    // If no buildings, add default ones
+                    addBuildingSection.classList.remove('hidden'); // Show "No buildings found" message
+                    buildingSelectorContainer.classList.add('hidden'); // Hide dropdown if no buildings
+                    await window.addDefaultBuildings(); // Call global function
+                }
+            }
+            catch (error) {
+                console.error("Error loading buildings:", error);
+                // Check if buildingSelect is not null before trying to set innerHTML
+                if (buildingSelect) {
+                    buildingSelect.innerHTML = `<p class="text-red-500 text-center">Error loading buildings. Please try again.</p>`;
+                } else {
+                    console.error("buildingSelect element not found when trying to display error.");
+                }
+            }
+        }
+
+        // Function to add default buildings
+        window.addDefaultBuildings = async function() { // Made global
+            const promises = window.defaultBuildings.map(async (buildingName) => {
+                const buildingId = `building-${buildingName.replace(/\s/g, '-')}`;
+                const buildingDocRef = doc(window.db, `artifacts/${window.appId}/users/${window.userId}/buildings`, buildingId);
+                await setDoc(buildingDocRef, { name: buildingName });
+            });
+            await Promise.all(promises);
+            await loadBuildings(); // Reload buildings after adding defaults
+        }
+
+        // Function to render building selection dropdown
+        window.renderBuildingSelector = function() { // Made global
+            buildingSelect.innerHTML = '';
+            window.buildings.forEach(building => {
+                const option = document.createElement('option');
+                option.value = building.id;
+                option.textContent = building.name;
+                buildingSelect.appendChild(option);
+            });
+            if (window.selectedBuildingId) {
+                buildingSelect.value = window.selectedBuildingId;
+            }
+            buildingSelectorContainer.classList.remove('hidden');
+            addBuildingSection.classList.add('hidden'); // Hide placeholder if buildings exist
+        }
+
+        // Function to select a building and load its units
+        let unsubscribeFromUnits = null; // To store the unsubscribe function for the current building's units listener
+        window.selectBuilding = async function(buildingId) { // Made global
+            if (!window.db || !window.userId) return;
+
+            if (unsubscribeFromUnits) {
+                unsubscribeFromUnits(); // Unsubscribe from previous building's units listener
+            }
+
+            window.selectedBuildingId = buildingId;
+            window.selectedUnitId = null; // Reset selected unit when building changes
+            currentSelectionDisplay.textContent = window.buildings.find(b => b.id === buildingId)?.name || buildingId;
+            
+            // Ensure the unit selection section is visible
+            document.getElementById('unit-selection-section').classList.remove('hidden');
+            unitSelectorContainer.classList.remove('hidden');
+            addUnitSection.classList.add('hidden'); // Hide add unit placeholder initially
+            checklistSection.classList.add('hidden'); // Hide checklist until unit is selected
+
+            const unitsCollectionRef = collection(window.db, `artifacts/${window.appId}/users/${window.userId}/buildings/${buildingId}/units`);
+            unsubscribeFromUnits = onSnapshot(unitsCollectionRef, (querySnapshot) => {
+                window.units = [];
+                querySnapshot.forEach((doc) => {
+                    window.units.push({ id: doc.id, name: doc.data().name || doc.id });
+                });
+                window.units.sort((a, b) => a.name.localeCompare(b.name)); // Sort units alphabetically
+                window.renderUnitSelector(); // Call global function
+
+                if (window.units.length > 0) {
+                    window.selectUnit(window.units[0].id); // Call global function
+                    addUnitSection.classList.add('hidden'); // Hide add unit placeholder if units exist
+                } else {
+                    addUnitSection.classList.remove('hidden'); // Show if no units
+                    window.currentUnitChecklistData = []; // Clear checklist if no units
+                    window.renderChecklist(); // Call global function
+                    window.updateDashboard(); // Call global function
+                }
+            }, (error) => {
+                console.error("Error listening to units in building:", error);
+                unitSelectorContainer.innerHTML = `<p class="text-red-500">Error loading units for this building. Please try again.</p>`;
+            });
+        }
+
+        // Function to render unit selection dropdown
+        window.renderUnitSelector = function() { // Made global
+            unitSelect.innerHTML = '';
+            window.units.forEach(unit => {
+                const option = document.createElement('option');
+                option.value = unit.id;
+                option.textContent = unit.name;
+                unitSelect.appendChild(option);
+            });
+            if (window.selectedUnitId) {
+                unitSelect.value = window.selectedUnitId;
+            }
+        }
+
+        // Function to select a unit and listen for its data
+        let unsubscribeFromUnitChecklist = null; // To store the unsubscribe function for the current unit's checklist listener
+        window.selectUnit = async function(unitId) { // Made global
+            if (!window.db || !window.userId || !window.selectedBuildingId) return;
+
+            if (unsubscribeFromUnitChecklist) {
+                unsubscribeFromUnitChecklist(); // Unsubscribe from previous unit's checklist listener
+            }
+
+            window.selectedUnitId = unitId;
+            const buildingName = window.buildings.find(b => b.id === window.selectedBuildingId)?.name || 'Unknown Building';
+            const unitName = window.units.find(u => u.id === unitId)?.name || 'Unknown Unit';
+            currentSelectionDisplay.textContent = `${buildingName} - ${unitName}`;
+            checklistSection.classList.remove('hidden');
+
+            const unitDocRef = doc(window.db, `artifacts/${window.appId}/users/${window.userId}/buildings/${window.selectedBuildingId}/units`, unitId);
+            unsubscribeFromUnitChecklist = onSnapshot(unitDocRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    window.currentUnitChecklistData = docSnap.data().checklist || [];
+                    window.renderChecklist(); // Call global function
+                    window.updateDashboard(); // Call global function
+                } else {
+                    console.warn("No checklist data found for unit:", unitId);
+                    window.currentUnitChecklistData = []; // Clear data if unit doesn't exist or has no checklist
+                    window.renderChecklist(); // Call global function
+                    window.updateDashboard(); // Call global function
+                }
+            }, (error) => {
+                console.error("Error listening to unit checklist data:", error);
+                checklistSection.innerHTML = `<p class="text-red-500 text-center">Error loading unit checklist data. Please try again.</p>`;
+            });
+        }
+
+        // Function to add a new building
+        window.addBuilding = async function() { // Made global
+            window.showModal('Enter a name for the new building:', 'prompt', ['Building Name (e.g., Building 500)'],
+                async (confirmed, buildingName) => {
+                if (confirmed && buildingName) {
+                    if (!window.db || !window.userId) {
+                        window.showModal('Please wait for authentication to complete.', 'alert');
+                        return;
+                    }
+                    const newBuildingId = `building-${Date.now()}`;
+                    const buildingDocRef = doc(window.db, `artifacts/${window.appId}/users/${window.userId}/buildings`, newBuildingId);
+
+                    try {
+                        await setDoc(buildingDocRef, { name: buildingName });
+                        console.log("New building added:", buildingName);
+                        // loadBuildings will be called by the onSnapshot listener for buildings collection
+                    } catch (error) {
+                        console.error("Error adding new building:", error);
+                        window.showModal("Failed to add new building. Please try again.", 'alert');
+                    }
+                } else if (confirmed) {
+                    window.showModal('Building Name is required.', 'alert');
+                }
+            });
+        }
+
+        // Function to add a new unit to the currently selected building
+        window.addUnitToCurrentBuilding = async function() { // Made global
+            console.log("addUnitToCurrentBuilding called.");
+            console.log("window.selectedBuildingId:", window.selectedBuildingId);
+
+            if (!window.selectedBuildingId) {
+                window.showModal('Please select a building first to add a unit.', 'alert');
+                console.log("Alert: No building selected.");
+                return;
+            }
+
+            window.showModal(`Enter a name for the new unit in ${window.buildings.find(b => b.id === window.selectedBuildingId)?.name || 'this building'}:`, 'prompt', ['Unit Name (e.g., Unit 101)'],
+                async (confirmed, unitName) => {
+                if (confirmed && unitName) {
+                    if (!window.db || !window.auth.currentUser || !window.userId) {
+                        window.showModal('Application not fully initialized. Please wait a moment or refresh.', 'alert');
+                        return;
+                    }
+
+                    console.log(`Attempting to add unit '${unitName}' to building '${window.selectedBuildingId}'`);
+                    const newUnitId = `unit-${Date.now()}`;
+                    const unitDocRef = doc(window.db, `artifacts/${window.appId}/users/${window.userId}/buildings/${window.selectedBuildingId}/units`, newUnitId);
+
+                    try {
+                        await setDoc(unitDocRef, {
+                            name: unitName,
+                            checklist: window.initialChecklistTemplate
+                        });
+                        console.log("New unit added to Firestore successfully.");
+                        // onSnapshot listener for units collection will automatically handle UI update
+                    } catch (error) {
+                        console.error("Error adding new unit to Firestore:", error);
+                        window.showModal("Failed to add new unit. Please try again.", 'alert');
+                    }
+                } else if (confirmed) {
+                    window.showModal('Unit Name is required.', 'alert');
+                }
+            });
+        }
+
+        // Function to add a new custom checklist item
+        window.addNewChecklistItem = function() {
+            if (!window.selectedUnitId) {
+                window.showModal('Please select a unit first to add a custom item.', 'alert');
+                return;
+            }
+
+            window.showModal('Add New Checklist Item', 'prompt', ['Item Name (e.g., Living Room Window)', 'Issue Description', 'Area (e.g., Kitchen, Bathroom)'],
+                async (confirmed, itemName, issueDesc, area) => {
+                if (confirmed && itemName && issueDesc && area) {
+                    if (!window.db || !window.userId || !window.selectedBuildingId || !window.selectedUnitId) {
+                        window.showModal('Application not fully initialized. Please wait a moment or refresh.', 'alert');
+                        return;
+                    }
+
+                    const newItem = {
+                        id: Date.now(), // Unique ID
+                        area: area.trim(),
+                        item: itemName.trim(),
+                        issue: issueDesc.trim(),
+                        priority: 'Medium', // Default
+                        cost: 0, // Default
+                        notes: '', // Default
+                        status: 'To Do' // Default
+                    };
+
+                    // Add to current data and save
+                    window.currentUnitChecklistData.push(newItem);
+                    const unitDocRef = doc(window.db, `artifacts/${window.appId}/users/${window.userId}/buildings/${window.selectedBuildingId}/units`, window.selectedUnitId);
+                    try {
+                        await setDoc(unitDocRef, { checklist: window.currentUnitChecklistData }, { merge: true });
+                        console.log("New custom item added to Firestore successfully.");
+                        window.renderChecklist();
+                        window.updateDashboard();
+                        window.renderFilters(); // Re-render filters in case a new area was added
+                    } catch (error) {
+                        console.error("Error saving new custom item:", error);
+                        window.showModal("Failed to add custom item. Please try again.", 'alert');
+                    }
+                } else if (confirmed) {
+                    window.showModal('Item Name, Issue Description, and Area are required.', 'alert');
+                }
+            });
+        };
+
+
+        // Function to save changes to a checklist item in Firestore
+        window.saveChecklistItem = async function(id, field, value) { // Made global
+            if (!window.db || !window.userId || !window.selectedBuildingId || !window.selectedUnitId) return;
+
+            const itemIndex = window.currentUnitChecklistData.findIndex(item => item.id === id);
+            if (itemIndex > -1) {
+                window.currentUnitChecklistData[itemIndex][field] = value;
+                const unitDocRef = doc(window.db, `artifacts/${window.appId}/users/${window.userId}/buildings/${window.selectedBuildingId}/units`, window.selectedUnitId);
+                try {
+                    await setDoc(unitDocRef, {
+                        checklist: window.currentUnitChecklistData
+                    }, { merge: true });
+                } catch (error) {
+                    console.error("Error saving checklist item:", error);
+                }
+            }
+        }
+
+        // Custom Modal Logic (moved to global scope)
+        let modalCallback = null;
+
+        window.showModal = function(message, type, inputPlaceholders = [], callback = null) {
+            modalMessage.textContent = message;
+            modalInput1.classList.add('hidden');
+            modalInput2.classList.add('hidden');
+            modalInput3.classList.add('hidden');
+            modalCancelBtn.classList.add('hidden');
+
+            modalInput1.value = '';
+            modalInput2.value = '';
+            modalInput3.value = '';
+
+            if (inputPlaceholders.length > 0) {
+                modalInput1.classList.remove('hidden');
+                modalInput1.placeholder = inputPlaceholders[0];
+                if (inputPlaceholders[1]) {
+                    modalInput2.classList.remove('hidden');
+                    modalInput2.placeholder = inputPlaceholders[1];
+                }
+                if (inputPlaceholders[2]) {
+                    modalInput3.classList.remove('hidden');
+                    modalInput3.placeholder = inputPlaceholders[2];
+                }
+                modalCancelBtn.classList.remove('hidden');
+            }
+
+            modalCallback = callback;
+            customModal.classList.remove('hidden');
+        }
+
+        window.hideModal = function() {
+            customModal.classList.add('hidden');
+            modalCallback = null;
+        }
+    </script>
+</body>
+</html>
